@@ -1,0 +1,2 @@
+[workspace]
+members = ["xtask", "xdp-firewall-rs", "xdp-firewall-rs-common"]
