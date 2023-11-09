@@ -6,7 +6,7 @@ use aya_bpf::{
     bindings::xdp_action,
     macros::{map, xdp},
     maps::HashMap,
-    programs::XdpContext
+    programs::XdpContext,
 };
 use aya_log_ebpf::info;
 
@@ -16,7 +16,12 @@ use network_types::{
     ip::Ipv4Hdr,
 };
 
-#[map]
+#[panic_handler]
+fn panic(_info: &core::panic::PanicInfo) -> ! {
+    unsafe { core::hint::unreachable_unchecked() }
+}
+
+#[map] // (1)
 static BLOCKLIST: HashMap<u32, u32> =
     HashMap::<u32, u32>::with_max_entries(1024, 0);
 
@@ -46,6 +51,7 @@ unsafe fn ptr_at<T>(ctx: &XdpContext, offset: usize) -> Result<*const T, ()> {
     Ok(&*ptr)
 }
 
+// (2)
 fn block_ip(address: u32) -> bool {
     unsafe { BLOCKLIST.get(&address).is_some() }
 }
@@ -69,9 +75,4 @@ fn try_xdp_firewall(ctx: XdpContext) -> Result<&'static str, ()> {
     info!(&ctx, "SRC: {:i}, ACTION: {}", source, action);
 
     Ok(action)
-}
-
-#[panic_handler]
-fn panic(_info: &core::panic::PanicInfo) -> ! {
-    unsafe { core::hint::unreachable_unchecked() }
 }
