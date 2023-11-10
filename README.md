@@ -47,11 +47,15 @@ cd xdp-firewall-rs
 - debug build:
 ```bash
 cargo xtask build-ebpf
+# or you can run
+make build
 ````
 
 - release build:
 ```bash
 cargo xtask build-ebpf --release
+# or you can run
+make release
 ```
 
 #### Build Userspace
@@ -70,12 +74,16 @@ cargo build --release
 - run release binary
 ```bash
 sudo ./target/release/xdp-firewall-rs
+# or you can run
+make run
 ```
 
 
 - run debug binary
 ```bash
 sudo ./target/debug/xdp-firewall-rs
+# or you can run
+make dev
 ```
 
 #### Run with logging
@@ -98,3 +106,16 @@ RUSTFLAGS="-Clinker=${CROSSARCH}-linux-musl-ld -C link-arg=-s" cargo build --rel
 ```
 
 The cross-compiled binary can found at  `target/x86_64-unknown-linux-musl/release/xdp-firewall-rs`, which can be copied to a Linux server or VM and run there.
+
+## Run with Docker
+This program can be built in a Docker container. 
+
+```bash
+docker build  -t xdp-firewall-rs .
+```
+
+Then you can run the container with:
+
+```bash
+docker run --privileged --user=root --rm -it xdp-firewall-rs
+```
