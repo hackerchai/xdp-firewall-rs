@@ -114,8 +114,15 @@ This program can be built in a Docker container.
 docker build  -t xdp-firewall-rs .
 ```
 
+Prepare the `block.list` file and put it in the same directory as the Dockerfile.
+
+```bash
+touch block.list
+echo "1.1.1.1/32" >> block.list # add ip addresses in CIDR format to the block.list file
+```
+
 Then you can run the container with:
 
 ```bash
-docker run --privileged --user=root --rm -it xdp-firewall-rs
+docker run --privileged --user=root --rm -it -v ./block.list:/ebpf/block.list xdp-firewall-rs
 ```
