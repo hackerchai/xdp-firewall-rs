@@ -1,22 +1,23 @@
-use anyhow::Context;
+use std::net::Ipv4Addr;
+
 use aya::{
     include_bytes_aligned,
-    maps::HashMap,
-    programs::{Xdp, XdpFlags},
+    maps::{perf::AsyncPerfEventArray, HashMap},
+    programs::{CgroupSkb, CgroupSkbAttachType},
+    util::online_cpus,
     Bpf,
 };
-use aya_log::BpfLogger;
+use bytes::BytesMut;
 use clap::Parser;
-use log::{info, warn};
-use std::net::Ipv4Addr;
-use tokio::signal;
-use std::fs;
-use std::net::IpAddr;
+use log::info;
+use tokio::{signal, task};
+
+use xdp_firewall_rs_common::PacketLog;
 
 #[derive(Debug, Parser)]
 struct Opt {
-    #[clap(short, long, default_value = "eth0")]
-    iface: String,
+    #[clap(short, long, default_value = "/sys/fs/cgroup/foo/cgroup.procs")]
+    cgroup_path: String,
 }
 
 #[tokio::main]
@@ -30,54 +31,50 @@ async fn main() -> Result<(), anyhow::Error> {
     // like to specify the eBPF program at runtime rather than at compile-time, you can
     // reach for `Bpf::load_file` instead.
     #[cfg(debug_assertions)]
-        let mut bpf = Bpf::load(include_bytes_aligned!(
+    let mut bpf = Bpf::load(include_bytes_aligned!(
         "../../target/bpfel-unknown-none/debug/xdp-firewall-rs"
     ))?;
     #[cfg(not(debug_assertions))]
-        let mut bpf = Bpf::load(include_bytes_aligned!(
+    let mut bpf = Bpf::load(include_bytes_aligned!(
         "../../target/bpfel-unknown-none/release/xdp-firewall-rs"
     ))?;
-    if let Err(e) = BpfLogger::init(&mut bpf) {
-        // This can happen if you remove all log statements from your eBPF program.
-        warn!("failed to initialize eBPF logger: {}", e);
-    }
-    let program: &mut Xdp =
-        bpf.program_mut("xdp_firewall").unwrap().try_into()?;
+    let program: &mut CgroupSkb =
+        bpf.program_mut("cgroup_skb_egress").unwrap().try_into()?;
+    let cgroup = std::fs::File::open(opt.cgroup_path)?;
+    // (1)
     program.load()?;
-    program.attach(&opt.iface, XdpFlags::default())
-        .context("failed to attach the XDP program with default flags - try changing XdpFlags::default() to XdpFlags::SKB_MODE")?;
-
-    let block_conf = fs::read_to_string("block.list").expect("can not read file: block.list");
-
-    let mut ips: Vec<[u8; 4]> = Vec::new();
-
-    for line in block_conf.lines() {
-        if line.is_empty() {
-            continue;
-        }
-
-        let parts: Vec<&str> = line.split('/').collect();
-        if parts.len() != 2 {
-            println!("无效的行: {}", line);
-            continue;
-        }
-
-        let ip = parts[0].parse::<IpAddr>().expect("invalid ip");
-        let octets = match ip {
-            IpAddr::V4(ipv4) => ipv4.octets(),
-            IpAddr::V6(ipv6) => ipv6.octets()[..4].try_into().unwrap(),
-        };
-
-        ips.push(octets);
-    }
+    // (2)
+    program.attach(cgroup, CgroupSkbAttachType::Egress)?;
 
     let mut blocklist: HashMap<_, u32, u32> =
         HashMap::try_from(bpf.map_mut("BLOCKLIST").unwrap())?;
 
-    let mut block_addr:u32;
-    for ip in ips {
-        block_addr = Ipv4Addr::new(ip[0], ip[1], ip[2], ip[3]).try_into()?;
-        blocklist.insert(block_addr, 0, 0)?;
+    let block_addr: u32 = Ipv4Addr::new(1, 1, 1, 1).try_into()?;
+
+    // (3)
+    blocklist.insert(block_addr, 0, 0)?;
+
+    let mut perf_array =
+        AsyncPerfEventArray::try_from(bpf.take_map("EVENTS").unwrap())?;
+
+    for cpu_id in online_cpus()? {
+        let mut buf = perf_array.open(cpu_id, None)?;
+
+        task::spawn(async move {
+            let mut buffers = (0..10)
+                .map(|_| BytesMut::with_capacity(1024))
+                .collect::<Vec<_>>();
+
+            loop {
+                let events = buf.read_events(&mut buffers).await.unwrap();
+                for buf in buffers.iter_mut().take(events.read) {
+                    let ptr = buf.as_ptr() as *const PacketLog;
+                    let data = unsafe { ptr.read_unaligned() };
+                    let src_addr = Ipv4Addr::from(data.ipv4_address);
+                    info!("LOG: DST {}, ACTION {}", src_addr, data.action);
+                }
+            }
+        });
     }
 
     info!("Waiting for Ctrl-C...");
